@@ -627,11 +627,11 @@ async fn phase9_consolidation_adjusts_trust() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Phase 10: Sub-agents (basic structure test)
+// Phase 10: Background tasks (basic structure test)
 // ═══════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn phase10_sub_agent_nodes_created() {
+async fn phase10_background_task_nodes_created() {
     let h = TestHarness::new();
 
     // Create parent session
@@ -645,57 +645,32 @@ async fn phase10_sub_agent_nodes_created() {
         .await
         .unwrap();
 
-    // Write SubAgent + Delegation nodes (testing the structure)
-    let sub_agent_node = Node::new(NodeKind::SubAgent, "Research sub-agent")
-        .with_body("Specializes in research tasks.");
-    let sub_id = sub_agent_node.id.clone();
-    h.db
-        .call({
-            let n = sub_agent_node;
-            move |conn| queries::insert_node(conn, &n)
-        })
-        .await
-        .unwrap();
-
-    let delegation = Node::new(NodeKind::Delegation, "Delegated: research JWT")
+    // Write a BackgroundTask node (testing the structure)
+    let task_node = Node::new(NodeKind::BackgroundTask, "Background: research JWT")
         .with_body("Research JWT token best practices");
-    let del_id = delegation.id.clone();
+    let task_id = task_node.id.clone();
     h.db
         .call({
-            let n = delegation;
+            let n = task_node;
             move |conn| queries::insert_node(conn, &n)
         })
         .await
         .unwrap();
 
-    // Link: Delegation → Session (PartOf)
-    let e1 = Edge::new(del_id.clone(), session_id.clone(), EdgeKind::PartOf);
+    // Link: BackgroundTask → Session (PartOf)
+    let e1 = Edge::new(task_id.clone(), session_id.clone(), EdgeKind::PartOf);
     h.db
         .call(move |conn| queries::insert_edge(conn, &e1))
         .await
         .unwrap();
 
-    // Link: Delegation → SubAgent (DerivesFrom)
-    let e2 = Edge::new(del_id, sub_id, EdgeKind::DerivesFrom);
-    h.db
-        .call(move |conn| queries::insert_edge(conn, &e2))
-        .await
-        .unwrap();
-
     // Verify structure
-    let sub_agents = h
+    let tasks = h
         .db
-        .call(|conn| queries::get_nodes_by_kind(conn, NodeKind::SubAgent))
+        .call(|conn| queries::get_nodes_by_kind(conn, NodeKind::BackgroundTask))
         .await
         .unwrap();
-    assert_eq!(sub_agents.len(), 1);
-
-    let delegations = h
-        .db
-        .call(|conn| queries::get_nodes_by_kind(conn, NodeKind::Delegation))
-        .await
-        .unwrap();
-    assert_eq!(delegations.len(), 1);
+    assert_eq!(tasks.len(), 1);
 
     // Verify edges
     let sid = session_id;

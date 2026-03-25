@@ -22,8 +22,8 @@ fn kind_color(kind: NodeKind) -> &'static str {
         | NodeKind::ToolCall | NodeKind::LoopIteration => "\x1b[93m",
         // Self-model → green
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => "\x1b[92m",
-        // Sub-agents → blue
-        NodeKind::SubAgent | NodeKind::Delegation | NodeKind::Synthesis => "\x1b[94m",
+        // Background tasks → blue
+        NodeKind::BackgroundTask => "\x1b[94m",
     }
 }
 
@@ -57,7 +57,7 @@ fn kind_category(kind: NodeKind) -> &'static str {
         NodeKind::Session | NodeKind::Turn | NodeKind::LlmCall
         | NodeKind::ToolCall | NodeKind::LoopIteration => "Operational",
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => "Self-Model",
-        NodeKind::SubAgent | NodeKind::Delegation | NodeKind::Synthesis => "Sub-Agents",
+        NodeKind::BackgroundTask => "Tasks",
     }
 }
 

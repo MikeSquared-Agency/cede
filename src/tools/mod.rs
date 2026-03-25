@@ -113,6 +113,72 @@ impl ToolRegistry {
         Ok(result)
     }
 
+    /// Get a cloneable handler function for a tool (for parallel execution).
+    pub fn get_handler(
+        &self,
+        name: &str,
+    ) -> Option<
+        Arc<
+            dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send>>
+                + Send
+                + Sync,
+        >,
+    > {
+        self.tools.get(name).map(|t| t.handler.clone())
+    }
+
+    /// Record a tool call's graph nodes after parallel execution.
+    pub async fn record_tool_call(
+        &self,
+        name: &str,
+        result: &ToolResult,
+        iter_node: NodeId,
+        db: &Db,
+        auto_link_tx: &async_channel::Sender<NodeId>,
+    ) -> Result<()> {
+        let trust = self.get(name).map(|t| t.trust).unwrap_or(0.5);
+
+        let tool_call_node = Node {
+            kind: NodeKind::ToolCall,
+            title: format!("ToolCall: {name}"),
+            body: Some(serde_json::json!({
+                "tool": name,
+                "output": &result.output,
+                "success": result.success,
+            }).to_string()),
+            trust_score: trust as f64,
+            ..Node::new(NodeKind::ToolCall, format!("ToolCall: {name}"))
+        };
+        let tc_id = tool_call_node.id.clone();
+        db.call({
+            let node = tool_call_node;
+            move |conn| queries::insert_node(conn, &node)
+        })
+        .await?;
+
+        let edge = Edge::new(tc_id.clone(), iter_node, EdgeKind::PartOf);
+        db.call(move |conn| queries::insert_edge(conn, &edge)).await?;
+
+        if result.success {
+            let fact = Node::new(NodeKind::Fact, format!("Result: {name}"))
+                .with_body(&result.output)
+                .with_trust(trust as f64);
+            let fact_id = fact.id.clone();
+            db.call({
+                let fact = fact;
+                move |conn| queries::insert_node(conn, &fact)
+            })
+            .await?;
+
+            let derives = Edge::new(fact_id.clone(), tc_id, EdgeKind::DerivesFrom);
+            db.call(move |conn| queries::insert_edge(conn, &derives)).await?;
+
+            let _ = auto_link_tx.try_send(fact_id);
+        }
+
+        Ok(())
+    }
+
     /// Build a JSON schema description of all tools (for LLM system prompt).
     pub fn schema_json(&self) -> serde_json::Value {
         let tools: Vec<serde_json::Value> = self
@@ -147,8 +213,7 @@ impl ToolRegistry {
 // ─── Built-in tools ─────────────────────────────────────
 
 /// Create a registry pre-loaded with the built-in cortex tools.
-/// Pass `llm` to enable the `delegate` tool (sub-agent spawning).
-/// Pass `None` to create a registry without delegation (used by sub-agents to prevent recursion).
+/// Pass `llm` to enable the `spawn_task` tool (background task loops).
 pub fn builtin_registry(
     db: Db,
     embed: EmbedHandle,
@@ -1012,7 +1077,7 @@ pub fn builtin_registry(
         });
     }
 
-    // ── delegate: spawn a sub-agent for a focused task ──
+    // ── spawn_task: kick off a background autonomous loop ──
     if let Some(llm) = llm {
         let db = db.clone();
         let embed = embed.clone();
@@ -1020,34 +1085,36 @@ pub fn builtin_registry(
         let auto_link_tx = auto_link_tx.clone();
         let config = config.clone();
         reg.register(Tool {
-            name: "delegate".to_string(),
+            name: "spawn_task".to_string(),
             description: concat!(
-                "Spawn a sub-agent to handle a focused task independently. ",
-                "The sub-agent gets its own session, full memory access (recall/remember/etc), ",
-                "and runs up to max_iterations loops before returning its answer. ",
-                "Use this for tasks that need focused research, multi-step reasoning, ",
-                "or when you want to explore a topic without cluttering the main conversation. ",
-                "The sub-agent's work is recorded in the graph as a Delegation."
+                "Spawn a background task that runs autonomously. The task gets its own ",
+                "agent loop with full tool access (recall, remember, bash, etc.) and writes ",
+                "all results directly to the graph. Returns immediately with a task ID — ",
+                "the agent does NOT wait for the task to finish. ",
+                "Use this for multi-step autonomous work: research, file processing, ",
+                "system maintenance, report generation, or any task that would take ",
+                "multiple tool calls to complete. ",
+                "Results are discoverable via recall once the task finishes."
             ).to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "What the sub-agent should do. Be specific and self-contained."
+                        "description": "What the background task should accomplish. Be specific."
                     },
                     "context": {
                         "type": "string",
-                        "description": "Additional context or constraints for the sub-agent (optional)"
+                        "description": "Additional context or constraints (optional)"
                     },
                     "max_iterations": {
                         "type": "integer",
-                        "description": "Max loops the sub-agent can run (default: 5, max: 10)"
+                        "description": "Max agent loop iterations (default: 10, max: 25)"
                     }
                 },
                 "required": ["task"]
             }),
-            trust: 0.9,
+            trust: 0.8,
             handler: Arc::new(move |input| {
                 let db = db.clone();
                 let embed = embed.clone();
@@ -1059,8 +1126,8 @@ pub fn builtin_registry(
                     let task = input["task"].as_str().unwrap_or("").to_string();
                     let context = input["context"].as_str().unwrap_or("").to_string();
                     let max_iter = input["max_iterations"].as_u64()
-                        .unwrap_or(5)
-                        .min(10) as usize;
+                        .unwrap_or(10)
+                        .min(25) as usize;
 
                     if task.is_empty() {
                         return Ok(ToolResult {
@@ -1069,93 +1136,105 @@ pub fn builtin_registry(
                         });
                     }
 
-                    // Build the full prompt for the sub-agent
                     let full_task = if context.is_empty() {
                         task.clone()
                     } else {
-                        format!("{task}\n\nAdditional context: {context}")
+                        format!("{task}\n\nContext: {context}")
                     };
 
-                    // Write a Delegation node
-                    let delegation = Node::new(NodeKind::Delegation, format!("Delegate: {}", &task))
-                        .with_body(&full_task)
-                        .with_importance(0.4);
-                    let delegation_id = delegation.id.clone();
+                    // Write a BackgroundTask node to track this task
+                    let task_node = Node::new(
+                        NodeKind::BackgroundTask,
+                        format!("Task: {}", &task),
+                    )
+                    .with_body(&format!("Status: running\n\n{full_task}"))
+                    .with_importance(0.6);
+                    let task_id = task_node.id.clone();
                     db.call({
-                        let d = delegation.clone();
-                        move |conn| queries::insert_node(conn, &d)
+                        let n = task_node;
+                        move |conn| queries::insert_node(conn, &n)
                     })
                     .await?;
 
-                    // Build sub-agent config with capped iterations
-                    let mut sub_config = config.clone();
-                    sub_config.max_iterations = max_iter;
+                    // Spawn the background loop — returns immediately
+                    let bg_task_id = task_id.clone();
+                    let bg_db = db.clone();
+                    let bg_embed = embed.clone();
+                    let bg_hnsw = hnsw.clone();
+                    let bg_auto_link_tx = auto_link_tx.clone();
+                    let bg_llm = llm.clone();
+                    let bg_config = config.clone();
 
-                    // Sub-agent gets all tools EXCEPT delegate (llm=None prevents recursion)
-                    let sub_tools = builtin_registry(
-                        db.clone(),
-                        embed.clone(),
-                        hnsw.clone(),
-                        auto_link_tx.clone(),
-                        None,
-                        sub_config.clone(),
-                    );
+                    tokio::spawn(async move {
+                        // Build tools for the background loop (no spawn_task — prevent recursion)
+                        let bg_tools = builtin_registry(
+                            bg_db.clone(),
+                            bg_embed.clone(),
+                            bg_hnsw.clone(),
+                            bg_auto_link_tx.clone(),
+                            None, // no LLM = no spawn_task in child
+                            bg_config.clone(),
+                        );
 
-                    let sub_agent = crate::agent::orchestrator::Agent {
-                        db: db.clone(),
-                        embed: embed.clone(),
-                        hnsw: hnsw.clone(),
-                        config: sub_config,
-                        llm: llm.clone(),
-                        tools: sub_tools,
-                        auto_link_tx: auto_link_tx.clone(),
-                    };
+                        let mut bg_agent_config = bg_config;
+                        bg_agent_config.max_iterations = max_iter;
 
-                    // Run the sub-agent
-                    let result = sub_agent.run(&full_task).await;
+                        let agent = crate::agent::orchestrator::Agent {
+                            db: bg_db.clone(),
+                            embed: bg_embed,
+                            hnsw: bg_hnsw,
+                            config: bg_agent_config,
+                            llm: bg_llm,
+                            tools: bg_tools,
+                            auto_link_tx: bg_auto_link_tx.clone(),
+                        };
 
-                    match result {
-                        Ok(answer) => {
-                            // Write Synthesis node with the result
-                            let synthesis = Node::new(
-                                NodeKind::Synthesis,
-                                format!("Synthesis: {}", &task),
-                            )
-                            .with_body(&answer)
-                            .with_importance(0.6);
-                            let synthesis_id = synthesis.id.clone();
-                            db.call({
-                                let s = synthesis.clone();
-                                move |conn| queries::insert_node(conn, &s)
+                        let result = agent.run(&full_task).await;
+
+                        // Update the BackgroundTask node with the result
+                        let (status, body) = match result {
+                            Ok(answer) => ("completed", format!("Status: completed\n\n{answer}")),
+                            Err(e) => ("failed", format!("Status: failed\n\nError: {e}")),
+                        };
+
+                        // Write a Fact with the result so recall surfaces it
+                        let result_fact = Node::new(
+                            NodeKind::Fact,
+                            format!("Task result: {}", &task),
+                        )
+                        .with_body(&body)
+                        .with_importance(0.6);
+                        let fact_id = result_fact.id.clone();
+                        let _ = bg_db
+                            .call({
+                                let f = result_fact;
+                                move |conn| queries::insert_node(conn, &f)
                             })
-                            .await?;
+                            .await;
 
-                            // Link: Synthesis ──DerivesFrom──▸ Delegation
-                            let edge = Edge::new(
-                                synthesis_id.clone(),
-                                delegation_id.clone(),
-                                EdgeKind::DerivesFrom,
-                            );
-                            db.call(move |conn| queries::insert_edge(conn, &edge)).await?;
+                        // Link result to the task node
+                        let edge = Edge::new(
+                            fact_id.clone(),
+                            bg_task_id,
+                            EdgeKind::DerivesFrom,
+                        );
+                        let _ = bg_db
+                            .call(move |conn| queries::insert_edge(conn, &edge))
+                            .await;
 
-                            // Enqueue synthesis for auto-linking
-                            let _ = auto_link_tx.try_send(synthesis_id);
+                        // Enqueue for auto-linking so it connects to related knowledge
+                        let _ = bg_auto_link_tx.try_send(fact_id);
 
-                            Ok(ToolResult {
-                                output: format!(
-                                    "[Sub-agent completed]\n\n{}",
-                                    answer
-                                ),
-                                success: true,
-                            })
-                        }
-                        Err(e) => {
-                            Ok(ToolResult {
-                                output: format!("Sub-agent error: {e}"),
-                                success: false,
-                            })
-                        }
-                    }
+                        eprintln!("[background task {status}]: {task}");
+                    });
+
+                    Ok(ToolResult {
+                        output: format!(
+                            "Background task spawned (id: {}). It will run autonomously and write results to the graph. Use recall to check for results later.",
+                            &task_id[..8]
+                        ),
+                        success: true,
+                    })
                 })
             }),
         });

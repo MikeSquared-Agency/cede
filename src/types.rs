@@ -28,10 +28,8 @@ pub enum NodeKind {
     LlmCall,
     ToolCall,
     LoopIteration,
-    // Sub-agents
-    SubAgent,
-    Delegation,
-    Synthesis,
+    // Background tasks
+    BackgroundTask,
     // Self-model — medium decay
     Pattern,
     Limitation,
@@ -54,9 +52,7 @@ impl NodeKind {
             Self::LlmCall => "llm_call",
             Self::ToolCall => "tool_call",
             Self::LoopIteration => "loop_iteration",
-            Self::SubAgent => "sub_agent",
-            Self::Delegation => "delegation",
-            Self::Synthesis => "synthesis",
+            Self::BackgroundTask => "background_task",
             Self::Pattern => "pattern",
             Self::Limitation => "limitation",
             Self::Capability => "capability",
@@ -78,9 +74,7 @@ impl NodeKind {
             "llm_call" => Some(Self::LlmCall),
             "tool_call" => Some(Self::ToolCall),
             "loop_iteration" => Some(Self::LoopIteration),
-            "sub_agent" => Some(Self::SubAgent),
-            "delegation" => Some(Self::Delegation),
-            "synthesis" => Some(Self::Synthesis),
+            "background_task" => Some(Self::BackgroundTask),
             "pattern" => Some(Self::Pattern),
             "limitation" => Some(Self::Limitation),
             "capability" => Some(Self::Capability),
@@ -488,24 +482,6 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub output: String,
     pub success: bool,
-}
-
-// ─── Sub-agent types ────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct SubAgentSpec {
-    pub name: String,
-    pub soul: String,
-    pub capabilities: Vec<String>,
-    pub tool_allowlist: Vec<String>,
-    pub max_iterations: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct SubAgentResult {
-    pub answer: String,
-    pub facts_created: Vec<NodeId>,
-    pub tokens_used: usize,
 }
 
 // ─── Model backend ──────────────────────────────────────
