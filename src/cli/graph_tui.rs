@@ -30,7 +30,7 @@ fn kind_color(kind: NodeKind) -> Color {
         NodeKind::Session | NodeKind::Turn | NodeKind::LlmCall
         | NodeKind::ToolCall | NodeKind::LoopIteration => Color::Yellow,
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => Color::Green,
-        NodeKind::SubAgent | NodeKind::Delegation | NodeKind::Synthesis => Color::Blue,
+        NodeKind::BackgroundTask => Color::Blue,
     }
 }
 
@@ -62,7 +62,7 @@ fn short_id(id: &str) -> String {
 
 // ─── Category helpers ───────────────────────────────────
 
-const ALL_CATEGORIES: &[&str] = &["All", "Identity", "Knowledge", "Conversational", "Operational", "Self-Model", "Sub-Agents"];
+const ALL_CATEGORIES: &[&str] = &["All", "Identity", "Knowledge", "Conversational", "Operational", "Self-Model", "Tasks"];
 
 fn node_category(kind: NodeKind) -> &'static str {
     match kind {
@@ -72,7 +72,7 @@ fn node_category(kind: NodeKind) -> &'static str {
         NodeKind::Session | NodeKind::Turn | NodeKind::LlmCall
         | NodeKind::ToolCall | NodeKind::LoopIteration => "Operational",
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => "Self-Model",
-        NodeKind::SubAgent | NodeKind::Delegation | NodeKind::Synthesis => "Sub-Agents",
+        NodeKind::BackgroundTask => "Tasks",
     }
 }
 

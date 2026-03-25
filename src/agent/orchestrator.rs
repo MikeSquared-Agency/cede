@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::db::Db;
@@ -131,9 +132,11 @@ impl Agent {
                         messages.push(Message::assistant(&response.text));
                     }
 
-                    // Execute ALL tool calls and collect results
+                    // Execute ALL tool calls in parallel and collect results
                     let mut tool_results: Vec<(String, String)> = Vec::new();
-                    for tc in &response.tool_calls {
+
+                    if response.tool_calls.len() == 1 {
+                        let tc = &response.tool_calls[0];
                         let result = self
                             .tools
                             .execute(
@@ -145,6 +148,47 @@ impl Agent {
                             )
                             .await?;
                         tool_results.push((tc.id.clone(), result.output));
+                    } else {
+                        let mut set = JoinSet::new();
+                        for tc in &response.tool_calls {
+                            let handler = self.tools.get_handler(&tc.name);
+                            let input = tc.input.clone();
+                            let id = tc.id.clone();
+                            let name = tc.name.clone();
+                            if let Some(handler) = handler {
+                                set.spawn(async move {
+                                    let result = handler(input).await;
+                                    (id, name, result)
+                                });
+                            } else {
+                                tool_results.push((
+                                    tc.id.clone(),
+                                    format!("Error: unknown tool '{}'", tc.name),
+                                ));
+                            }
+                        }
+                        while let Some(res) = set.join_next().await {
+                            match res {
+                                Ok((id, name, Ok(result))) => {
+                                    self.tools
+                                        .record_tool_call(
+                                            &name,
+                                            &result,
+                                            iter_id.clone(),
+                                            &self.db,
+                                            &self.auto_link_tx,
+                                        )
+                                        .await?;
+                                    tool_results.push((id, result.output));
+                                }
+                                Ok((id, _name, Err(e))) => {
+                                    tool_results.push((id, format!("Tool error: {e}")));
+                                }
+                                Err(e) => {
+                                    eprintln!("Tool task panicked: {e}");
+                                }
+                            }
+                        }
                     }
 
                     // Push all tool results in a single user message
@@ -393,7 +437,9 @@ impl Agent {
                     }
 
                     let mut tool_results: Vec<(String, String)> = Vec::new();
-                    for tc in &response.tool_calls {
+
+                    if response.tool_calls.len() == 1 {
+                        let tc = &response.tool_calls[0];
                         let result = self
                             .tools
                             .execute(
@@ -405,6 +451,47 @@ impl Agent {
                             )
                             .await?;
                         tool_results.push((tc.id.clone(), result.output));
+                    } else {
+                        let mut set = JoinSet::new();
+                        for tc in &response.tool_calls {
+                            let handler = self.tools.get_handler(&tc.name);
+                            let input = tc.input.clone();
+                            let id = tc.id.clone();
+                            let name = tc.name.clone();
+                            if let Some(handler) = handler {
+                                set.spawn(async move {
+                                    let result = handler(input).await;
+                                    (id, name, result)
+                                });
+                            } else {
+                                tool_results.push((
+                                    tc.id.clone(),
+                                    format!("Error: unknown tool '{}'", tc.name),
+                                ));
+                            }
+                        }
+                        while let Some(res) = set.join_next().await {
+                            match res {
+                                Ok((id, name, Ok(result))) => {
+                                    self.tools
+                                        .record_tool_call(
+                                            &name,
+                                            &result,
+                                            iter_id.clone(),
+                                            &self.db,
+                                            &self.auto_link_tx,
+                                        )
+                                        .await?;
+                                    tool_results.push((id, result.output));
+                                }
+                                Ok((id, _name, Err(e))) => {
+                                    tool_results.push((id, format!("Tool error: {e}")));
+                                }
+                                Err(e) => {
+                                    eprintln!("Tool task panicked: {e}");
+                                }
+                            }
+                        }
                     }
 
                     if tool_results.len() == 1 {
