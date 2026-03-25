@@ -1,137 +1,133 @@
-# cortex-embedded
+# cede
 
-**One crate. One SQLite file. A complete AI agent with graph memory, sub-agents, and a CLI.**
+**Fork this. Build your own self-aware agent.**
 
-Everything — identity, knowledge, tool calls, LLM calls, sub-agent work, loop iterations, self-model — is a node in the graph. The agent queries its own history the same way it queries any other knowledge.
+cede is a forkable starter kit built on top of [cortex-embedded](https://github.com/MikeSquared-Agency/cortex-embedded) — the graph-memory cognitive engine. Fork this repo, shape the soul, add your own tools, and ship an agent that remembers everything.
 
-## Features
+> **Want omnichannel?** See [**omni-cede**](https://github.com/MikeSquared-Agency/omni-cede) — a fork of cede that adds an HTTP API, identity resolution, and per-channel session management.
+
+## Ecosystem
+
+```
+cortex-embedded          <-- the engine (upstream)
+  |-- cede               <-- you are here (fork this to build your own agent)
+       |-- omni-cede     <-- omnichannel variant (HTTP API, identity, sessions)
+```
+
+## What You Get
+
+Everything from cortex-embedded, packaged as a ready-to-run agent:
 
 - **Graph memory** — 18 node kinds, 6 edge kinds, full provenance tracking
-- **Hybrid recall** — HNSW ANN search + BFS graph traversal + trust scoring + recency decay
-- **Embeddings** — BAAI/bge-small-en-v1.5 via fastembed (384-dim, runs locally)
-- **Auto-link** — background task creates `RelatesTo` and `Contradicts` edges automatically
-- **Decay** — importance fades over time; Soul/Belief/Goal nodes are immune
-- **Trust propagation** — `Supports` edges boost trust, `Contradicts` edges reduce it
-- **Context compaction** — LLM extracts key facts from long conversations into the graph
-- **LLM backends** — Anthropic Claude, Ollama (local), Mock (testing)
-- **Tool registry** — tools write provenance-tracked results into the graph
-- **Sub-agents** — spawn into the shared graph with scoped identity
-- **CLI** — chat, ask, memory search, identity management, consolidation, diagnostics
+- **Graph-native chat sessions** — fresh HNSW-based briefing per turn, no growing message history
+- **Hybrid recall** — semantic search + graph traversal + recency window (last 7 messages always included)
+- **Local embeddings** — BAAI/bge-small-en-v1.5 via fastembed (384-dim, no API calls)
+- **Auto-linking + contradiction detection** — three-tier: cosine -> negation keywords -> LLM adjudication
+- **Importance decay + trust propagation** — the agent's beliefs strengthen or weaken over time
+- **Context compaction** — LLM extracts key facts from long conversations
+- **LLM backends** — Anthropic Claude or Ollama (local)
+- **Tool registry** — add custom tools that write results into the graph with provenance
+- **Sub-agents** — delegate tasks to scoped sub-agents in the shared graph
+- **TUI graph explorer** — interactive terminal UI with chat, node inspection, visualization
+- **CLI** — chat, ask, memory search, soul/identity management, graph visualization, diagnostics
 
 ## Quick Start
 
 ```bash
+# Clone your fork
+git clone https://github.com/YOUR_USERNAME/cede.git
+cd cede
+
 # Build
 cargo build --release
 
 # Initialize database and download embedding model
-cortex init
+cede init
 
-# Check graph health
-cortex doctor
-
-# View identity
-cortex soul show
-
-# Memory stats
-cortex memory stats
-
-# Interactive chat (requires LLM)
-ANTHROPIC_API_KEY=sk-ant-... cortex chat
-# or with Ollama
-cortex --ollama llama3 chat
+# Start chatting (pick one LLM backend)
+ANTHROPIC_API_KEY=sk-ant-... cede chat
+cede --ollama llama3 chat
 
 # Single query
-cortex ask "What do you know about JWT tokens?"
+cede ask "What do you know?"
 
-# Semantic search
-cortex memory search "authentication"
+# Interactive graph explorer
+ANTHROPIC_API_KEY=sk-ant-... cede graph explore
 
-# Run trust consolidation
-cortex consolidate
+# Graph overview
+cede graph overview
+
+# Memory operations
+cede memory stats
+cede memory search "topic"
+cede memory show <node_id>
+
+# Identity
+cede soul show
+
+# Diagnostics
+cede doctor
+cede consolidate
+```
+
+## How to Make It Yours
+
+### 1. Shape the Soul
+
+Edit the seed identity in `src/lib.rs` — the `seed_identity()` function creates the initial `Soul` node. Change the body text to define who your agent is.
+
+### 2. Add Custom Tools
+
+Register tools in `src/tools/mod.rs`. Each tool is a function that takes parameters and returns a `ToolResult`. Tool calls are automatically tracked as `ToolCall` nodes in the graph.
+
+### 3. Tune the Config
+
+Adjust `src/config.rs` defaults:
+
+| Parameter | Default | What it does |
+|-----------|---------|-------------|
+| `session_recency_window` | 7 | Recent messages always included in briefing |
+| `auto_link_cosine_threshold` | 0.75 | Minimum similarity for auto-linking |
+| `contradiction_cosine_threshold` | 0.85 | Trigger contradiction detection |
+| `compaction_threshold` | 20 | Messages before context compaction |
+| `max_iterations` | 10 | Agent loop iteration limit |
+| `decay_interval_secs` | 60 | Background decay sweep frequency |
+
+### 4. Staying Updated
+
+cede tracks cortex-embedded as the `upstream` remote. To pull engine improvements:
+
+```bash
+git fetch upstream
+git merge upstream/master
 ```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│                cortex-embedded               │
-├──────────┬──────────┬──────────┬────────────┤
-│  recall  │ briefing │  tools   │   agent    │
-│ (hybrid  │ (context │ (registry│  (loop +   │
-│  search) │  doc)    │  + trust)│ sub-agents)│
-├──────────┴──────────┴──────────┴────────────┤
-│              graph + memory                  │
-│         (BFS walk, scoring, decay)           │
-├──────────┬──────────────────────────────────┤
-│   HNSW   │           SQLite                  │
-│ (2-tier) │  (WAL mode, bundled rusqlite)     │
-├──────────┴──────────────────────────────────┤
-│              fastembed                        │
-│        (BAAI/bge-small-en-v1.5)              │
-└─────────────────────────────────────────────┘
++-----------------------------------------+
+|                  cede                    |
++---------+----------+---------+----------+
+|  recall | briefing |  tools  |  agent   |
+| (HNSW + | (scored  | (custom | (loop +  |
+|  graph) |  context)|  + std) | subagent)|
++---------+----------+---------+----------+
+|            graph + memory               |
+|       (BFS, scoring, decay)             |
++---------+-------------------------------+
+|  HNSW   |         SQLite                |
+| (2-tier)|  (WAL, bundled rusqlite)      |
++---------+-------------------------------+
+|            fastembed                     |
+|      (BAAI/bge-small-en-v1.5)           |
++-----------------------------------------+
 ```
 
-### Node Kinds
+## Tests
 
-| Category | Kinds |
-|----------|-------|
-| Knowledge | `Fact`, `Entity`, `Concept`, `Decision` |
-| Identity | `Soul`, `Belief`, `Goal` |
-| Operational | `Session`, `Turn`, `LlmCall`, `ToolCall`, `LoopIteration` |
-| Sub-agents | `SubAgent`, `Delegation`, `Synthesis` |
-| Meta | `Pattern`, `Capability`, `Limitation`, `Contradiction` |
-
-### Edge Kinds
-
-`RelatesTo` · `Contradicts` · `Supports` · `DerivesFrom` · `PartOf` · `Supersedes`
-
-## How It Works
-
-Every interaction creates a provenance chain:
-
-```
-Fact → ToolCall → LoopIteration → Session
-```
-
-The agent knows not just *what* it knows, but *how it came to know it*, *when*, *via which tool*, and *how much to trust it*.
-
-**Recall pipeline:**
-1. Embed query → HNSW k-NN search
-2. BFS graph walk from candidates
-3. Score: `importance × trust × recency × proximity_bonus`
-4. Return ranked nodes with contradiction warnings
-
-**Background tasks:**
-- **Auto-link** — new nodes are compared against the graph; similar nodes get `RelatesTo` edges, contradicting nodes get `Contradicts` edges
-- **Decay** — every 60s, nodes not accessed in 24h lose importance (floor: 0.01)
-
-## Using as a Library
-
-```rust
-use cortex_embedded::{CortexEmbedded, types::*};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cx = CortexEmbedded::open("my_agent.db").await?;
-
-    // Store knowledge
-    let node = Node::new(NodeKind::Fact, "Rust is fast")
-        .with_body("Rust provides zero-cost abstractions and memory safety.");
-    cx.remember(node).await?;
-
-    // Recall
-    let results = cx.recall("performance", RecallOptions::default()).await?;
-    for r in &results {
-        println!("[{}] {} — score: {:.3}", r.node.kind, r.node.title, r.score);
-    }
-
-    // Build briefing for LLM
-    let briefing = cx.briefing("system design", 12).await?;
-    println!("{}", briefing.context_doc);
-
-    Ok(())
-}
+```bash
+# Run all 28 tests
+cargo test -- --test-threads=1
 ```
 
 ## Dependencies
@@ -139,25 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Crate | Purpose |
 |-------|---------|
 | `rusqlite` (bundled) | SQLite with WAL mode |
-| `instant-distance` | HNSW approximate nearest neighbor search |
-| `fastembed` | Local text embeddings (ONNX runtime) |
+| `instant-distance` | HNSW approximate nearest neighbor |
+| `fastembed` | Local text embeddings (ONNX) |
 | `tokio` | Async runtime |
-| `reqwest` | HTTP client for Anthropic API |
+| `reqwest` | HTTP client for Anthropic |
 | `clap` | CLI argument parsing |
-| `async-channel` | Background task communication |
-
-## Tests
-
-```bash
-# Run all tests (22 total)
-cargo test -- --test-threads=1
-
-# Just HNSW unit tests
-cargo test --lib hnsw
-
-# Just integration tests
-cargo test --test integration -- --test-threads=1
-```
+| `ratatui` + `crossterm` | TUI graph explorer |
+| `async-channel` | Background task channels |
 
 ## License
 
