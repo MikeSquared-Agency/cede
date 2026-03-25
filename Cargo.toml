@@ -1,15 +1,16 @@
 [package]
-name    = "cortex-embedded"
+name    = "cede"
 version = "0.1.0"
 edition = "2021"
+description = "A forkable self-aware agent with graph memory. Built on cortex-embedded."
 
 [lib]
-name = "cortex_embedded"
+name = "cede"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cortex"
-path = "src/bin/cortex.rs"
+name = "cede"
+path = "src/bin/cede.rs"
 
 [dependencies]
 rusqlite         = { version = "0.31", features = ["bundled"] }

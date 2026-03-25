@@ -350,6 +350,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cede"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "async-trait",
+ "bytemuck",
+ "chrono",
+ "clap",
+ "crossterm",
+ "fastembed",
+ "futures",
+ "instant-distance",
+ "lru",
+ "ratatui",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,30 +528,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "cortex-embedded"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "async-trait",
- "bytemuck",
- "chrono",
- "clap",
- "crossterm",
- "fastembed",
- "futures",
- "instant-distance",
- "lru",
- "ratatui",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "uuid",
 ]
 
 [[package]]

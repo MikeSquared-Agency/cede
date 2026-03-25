@@ -6,10 +6,10 @@ mod graph_viz;
 mod graph_tui;
 
 #[derive(Parser)]
-#[command(name = "cortex", about = "Embedded AI agent with graph memory")]
+#[command(name = "cede", about = "A forkable self-aware agent with graph memory")]
 pub struct Cli {
     /// Path to the SQLite database file.
-    #[arg(long, default_value = "cortex.db")]
+    #[arg(long, default_value = "cede.db")]
     pub db: String,
 
     /// Use Ollama as the LLM backend (format: model@url, e.g. llama3@http://localhost:11434)
@@ -191,7 +191,7 @@ pub async fn run() -> crate::error::Result<()> {
                 Ok(())
             }
             SoulAction::Edit => {
-                println!("Soul editing not yet implemented. Use `cortex memory show <id>` to inspect.");
+                println!("Soul editing not yet implemented. Use `cede memory show <id>` to inspect.");
                 Ok(())
             }
         },
@@ -465,7 +465,7 @@ pub async fn run() -> crate::error::Result<()> {
                 })
                 .await?;
 
-            println!("cortex chat — type 'exit' or Ctrl+C to quit\n");
+            println!("cede chat — type 'exit' or Ctrl+C to quit\n");
             let stdin = io::stdin();
             loop {
                 print!("> ");
