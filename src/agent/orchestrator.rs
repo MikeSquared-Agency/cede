@@ -460,6 +460,14 @@ impl Agent {
                         // Multiple tools — fire all handlers in parallel
                         let mut set = JoinSet::new();
                         for tc in &response.tool_calls {
+                            // Validate input before spawning parallel handler
+                            if let Err(e) = self.tools.validate_input(&tc.name, &tc.input) {
+                                tool_results.push((
+                                    tc.id.clone(),
+                                    format!("Validation error: {e}"),
+                                ));
+                                continue;
+                            }
                             let handler = self.tools.get_handler(&tc.name);
                             let input = tc.input.clone();
                             let id = tc.id.clone();
@@ -479,7 +487,6 @@ impl Agent {
                         while let Some(res) = set.join_next().await {
                             match res {
                                 Ok((id, name, Ok(result))) => {
-                                    // Write graph nodes for this tool call
                                     self.tools
                                         .record_tool_call(
                                             &name,

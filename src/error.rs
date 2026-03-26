@@ -34,6 +34,9 @@ pub enum CortexError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Unsupported: {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, CortexError>;
