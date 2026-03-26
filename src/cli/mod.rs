@@ -344,102 +344,17 @@ pub async fn run() -> crate::error::Result<()> {
                 Ok(())
             }
             SoulAction::Edit => {
-                // Collect all soul/belief/goal nodes
-                let mut nodes = Vec::new();
-                let souls = cx
-                    .db
-                    .call(|conn| crate::db::queries::get_nodes_by_kind(conn, crate::types::NodeKind::Soul))
-                    .await?;
-                let beliefs = cx
-                    .db
-                    .call(|conn| crate::db::queries::get_nodes_by_kind(conn, crate::types::NodeKind::Belief))
-                    .await?;
-                let goals = cx
-                    .db
-                    .call(|conn| crate::db::queries::get_nodes_by_kind(conn, crate::types::NodeKind::Goal))
-                    .await?;
-                nodes.extend(souls);
-                nodes.extend(beliefs);
-                nodes.extend(goals);
-
-                if nodes.is_empty() {
-                    println!("No soul/belief/goal nodes found.");
-                    return Ok(());
-                }
-
-                // Display numbered list
-                for (i, n) in nodes.iter().enumerate() {
-                    println!("  [{}] [{}] {}", i + 1, n.kind, n.title);
-                    if let Some(ref body) = n.body {
-                        println!("      {}", body.chars().take(80).collect::<String>());
-                    }
-                }
-
-                // Prompt user for selection
-                print!("\nSelect node to edit (1-{}): ", nodes.len());
-                io::stdout().flush().ok();
-                let mut line = String::new();
-                io::stdin().lock().read_line(&mut line)
-                    .map_err(|e| crate::error::CortexError::Config(format!("IO error: {e}")))?;
-                let idx: usize = line.trim().parse().map_err(|_| {
-                    crate::error::CortexError::Config("Invalid selection".into())
-                })?;
-                if idx == 0 || idx > nodes.len() {
-                    println!("Invalid selection.");
-                    return Ok(());
-                }
-                let node = &nodes[idx - 1];
-
-                // Try $EDITOR, fall back to inline input
-                let editor = std::env::var("EDITOR").unwrap_or_default();
-                let new_body = if !editor.is_empty() {
-                    let tmp = std::env::temp_dir().join(format!("omni-cede-edit-{}.md", &node.id[..8]));
-                    let current = node.body.as_deref().unwrap_or("");
-                    std::fs::write(&tmp, current)
-                        .map_err(|e| crate::error::CortexError::Config(format!("IO error: {e}")))?;
-
-                    let status = std::process::Command::new(&editor)
-                        .arg(&tmp)
-                        .status()
-                        .map_err(|e| crate::error::CortexError::Config(format!("Failed to open editor: {e}")))?;
-                    if !status.success() {
-                        println!("Editor exited with error. Aborting.");
-                        return Ok(());
-                    }
-                    let edited = std::fs::read_to_string(&tmp)
-                        .map_err(|e| crate::error::CortexError::Config(format!("IO error: {e}")))?;
-                    let _ = std::fs::remove_file(&tmp);
-                    edited.trim().to_string()
-                } else {
-                    println!("Current content:");
-                    println!("  {}", node.body.as_deref().unwrap_or("(empty)"));
-                    print!("New content (or blank to keep): ");
-                    io::stdout().flush().ok();
-                    let mut buf = String::new();
-                    io::stdin().lock().read_line(&mut buf)
-                        .map_err(|e| crate::error::CortexError::Config(format!("IO error: {e}")))?;
-                    let trimmed = buf.trim().to_string();
-                    if trimmed.is_empty() {
-                        println!("No changes.");
-                        return Ok(());
-                    }
-                    trimmed
-                };
-
-                // Update in DB
-                let node_id = node.id.clone();
-                let body_clone = new_body.clone();
-                cx.db.call(move |conn| {
-                    crate::db::queries::update_node_fields(conn, &node_id, None, None, Some(&body_clone), None, None)
-                }).await?;
-
-                // Re-embed the updated node
-                let embed_text = format!("{} {}", node.title, new_body);
-                let vec = cx.embed.embed(&embed_text).await?;
-                let node_id2 = node.id.clone();
-                cx.hnsw.write().await.insert(node_id2, vec);
-
-                println!("Updated [{}] {}", node.kind, node.title);
+                // Launch the graph TUI filtered to Identity nodes with edit mode.
+                // Select an identity node and press 'e' to edit.
+                // Identity category is index 1 in ALL_CATEGORIES
+                graph_tui::run_with_edit(
+                    cx.db.clone(),
+                    cx.embed.clone(),
+                    cx.hnsw.clone(),
+                    1, // "Identity" category
+                )
+                    .await
+                    .map_err(|e| crate::error::CortexError::Config(format!("TUI error: {e}")))?;
                 Ok(())
             }
         },
@@ -506,7 +421,13 @@ pub async fn run() -> crate::error::Result<()> {
                             })
                             .await?;
 
-                        graph_tui::run_with_chat(cx.db.clone(), agent, session_id)
+                        graph_tui::run_with_chat(
+                            cx.db.clone(),
+                            agent,
+                            session_id,
+                            Some(cx.embed.clone()),
+                            Some(cx.hnsw.clone()),
+                        )
                             .await
                             .map_err(|e| crate::error::CortexError::Config(format!("TUI error: {e}")))?;
                     }
