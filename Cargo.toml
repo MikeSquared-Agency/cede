@@ -2,7 +2,7 @@
 name    = "cede"
 version = "0.1.0"
 edition = "2021"
-description = "A forkable self-aware agent with graph memory. Built on cortex-embedded."
+description = "A forkable self-aware agent with graph memory"
 
 [lib]
 name = "cede"
@@ -31,3 +31,4 @@ async-trait      = "0.1"
 chrono           = "0.4"
 ratatui          = "0.29"
 crossterm        = { version = "0.28", features = ["event-stream"] }
+jsonschema       = "0.28"

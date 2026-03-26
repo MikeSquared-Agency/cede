@@ -191,7 +191,14 @@ pub async fn run() -> crate::error::Result<()> {
                 Ok(())
             }
             SoulAction::Edit => {
-                println!("Soul editing not yet implemented. Use `cede memory show <id>` to inspect.");
+                graph_tui::run_with_edit(
+                    cx.db.clone(),
+                    cx.embed.clone(),
+                    cx.hnsw.clone(),
+                    1, // "Identity" category
+                )
+                    .await
+                    .map_err(|e| crate::error::CortexError::Config(format!("TUI error: {e}")))?;
                 Ok(())
             }
         },
@@ -258,7 +265,7 @@ pub async fn run() -> crate::error::Result<()> {
                             })
                             .await?;
 
-                        graph_tui::run_with_chat(cx.db.clone(), agent, session_id)
+                        graph_tui::run_with_chat(cx.db.clone(), agent, session_id, Some(cx.embed.clone()), Some(cx.hnsw.clone()))
                             .await
                             .map_err(|e| crate::error::CortexError::Config(format!("TUI error: {e}")))?;
                     }
