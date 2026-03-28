@@ -78,6 +78,17 @@ struct DiscordMessage {
     guild_id: Option<String>,
     #[serde(default)]
     bot: bool,
+    #[serde(default)]
+    attachments: Vec<DiscordAttachment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct DiscordAttachment {
+    url: String,
+    filename: String,
+    content_type: Option<String>,
+    size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,8 +254,21 @@ impl Channel for DiscordChannel {
                                 if msg.author.bot || msg.author.id == bot_id {
                                     continue;
                                 }
-                                // Skip empty messages
-                                if msg.content.trim().is_empty() {
+
+                                // Try to download first image attachment
+                                let media = if let Some(att) = msg.attachments.iter().find(|a| {
+                                    a.content_type
+                                        .as_deref()
+                                        .map_or(false, |ct| ct.starts_with("image/"))
+                                }) {
+                                    download_discord_attachment(&client, att).await
+                                } else {
+                                    None
+                                };
+
+                                // Skip if there's neither text nor media
+                                let text = msg.content.clone();
+                                if text.trim().is_empty() && media.is_none() {
                                     continue;
                                 }
 
@@ -252,8 +276,12 @@ impl Channel for DiscordChannel {
                                     channel: "discord".into(),
                                     external_id: msg.author.id.clone(),
                                     sender_name: Some(msg.author.username.clone()),
-                                    text: msg.content.clone(),
-                                    media: None,
+                                    text: if text.trim().is_empty() {
+                                        String::new()
+                                    } else {
+                                        text
+                                    },
+                                    media,
                                     reply_to: None,
                                     group_id: Some(msg.channel_id.clone()),
                                     callback_url: None,
@@ -396,4 +424,37 @@ impl Channel for DiscordChannel {
             .await;
         Ok(())
     }
+}
+
+/// Download a Discord image attachment and return it as a `MediaPayload`.
+async fn download_discord_attachment(
+    client: &reqwest::Client,
+    att: &DiscordAttachment,
+) -> Option<MediaPayload> {
+    let data = client
+        .get(&att.url)
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()?
+        .to_vec();
+
+    if data.is_empty() {
+        return None;
+    }
+
+    let mime = att
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "image/png".to_string());
+
+    Some(MediaPayload {
+        kind: MediaKind::Image,
+        data,
+        mime_type: mime,
+        filename: Some(att.filename.clone()),
+        url: Some(att.url.clone()),
+    })
 }

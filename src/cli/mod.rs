@@ -672,7 +672,7 @@ pub async fn run() -> crate::error::Result<()> {
                     user_id: "local".to_string(),
                     is_group: false,
                 };
-                match agent.run_turn(&session_id, input, &cli_ctx).await {
+                match agent.run_turn(&session_id, input, &cli_ctx, None).await {
                     Ok(response) => println!("\n{response}\n"),
                     Err(e) => eprintln!("\nError: {e}\n"),
                 }

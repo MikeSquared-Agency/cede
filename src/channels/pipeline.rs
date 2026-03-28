@@ -106,7 +106,7 @@ impl Pipeline {
         };
 
         let mut reply = agent
-            .run_turn(&managed.node_id, &envelope.text, &turn_ctx)
+            .run_turn(&managed.node_id, &envelope.text, &turn_ctx, envelope.media.as_ref())
             .await
             .map_err(|e| CortexError::Pipeline(format!("Agent error: {e}")))?;
 
@@ -179,7 +179,7 @@ impl Pipeline {
         };
 
         let mut reply = agent
-            .run_turn(&managed.node_id, &envelope.text, &turn_ctx)
+            .run_turn(&managed.node_id, &envelope.text, &turn_ctx, envelope.media.as_ref())
             .await
             .map_err(|e| CortexError::Pipeline(format!("Agent error: {e}")))?;
 

@@ -426,6 +426,38 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self { role: Role::User, content: content.into(), tool_call_id: None, content_blocks: None }
     }
+    /// Create a user message with an inline image (Anthropic vision format).
+    ///
+    /// The image is sent as a base64-encoded source block alongside the text.
+    /// If `text` is empty, only the image block is included (with a generic
+    /// prompt so the model knows to describe/process it).
+    pub fn user_with_image(text: &str, base64_data: &str, mime_type: &str) -> Self {
+        let text_content = if text.is_empty() {
+            "[The user sent an image]".to_string()
+        } else {
+            text.to_string()
+        };
+        let blocks = serde_json::json!([
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": base64_data,
+                }
+            },
+            {
+                "type": "text",
+                "text": text_content,
+            }
+        ]);
+        Self {
+            role: Role::User,
+            content: text_content,
+            tool_call_id: None,
+            content_blocks: Some(blocks),
+        }
+    }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self { role: Role::Assistant, content: content.into(), tool_call_id: None, content_blocks: None }
     }

@@ -40,11 +40,12 @@ toml             = "0.8"
 cron             = "0.13"
 url              = "2"
 
+base64           = "0.22"
+
 # Browser module (optional)
 tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
-base64           = { version = "0.22", optional = true }
 rand             = { version = "0.8", optional = true }
 
 [features]
 default = []
-browser = ["tokio-tungstenite", "base64", "rand"]
+browser = ["tokio-tungstenite", "rand"]

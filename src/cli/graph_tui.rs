@@ -599,7 +599,7 @@ pub async fn run_with_chat(
                                             is_group: false,
                                         };
                                         tokio::spawn(async move {
-                                            match agent_c.run_turn(&sid, &input, &cli_ctx).await {
+                                            match agent_c.run_turn(&sid, &input, &cli_ctx, None).await {
                                                 Ok(resp) => { let _ = tx.send(AgentResult::Response(resp)); }
                                                 Err(e) => { let _ = tx.send(AgentResult::Error(e.to_string())); }
                                             }
