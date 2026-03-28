@@ -237,7 +237,8 @@ async fn deliver_for_session(
     let response = llm.complete(&messages).await?;
     let reply_text = response.text.trim().to_string();
 
-    if reply_text.is_empty() || reply_text == "[SKIP]" {
+    // Strip [SKIP] anywhere in the response — exact match, starts-with, or contains
+    if reply_text.is_empty() || reply_text.contains("[SKIP]") {
         tracing::info!(
             session_id = %session_id,
             count = notifications.len(),
