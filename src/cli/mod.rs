@@ -258,12 +258,18 @@ pub async fn run() -> crate::error::Result<()> {
                     let notif_pipeline = std::sync::Arc::clone(&state.pipeline);
                     let notif_db = state.cx.db.clone();
                     let notif_llm = state.agent.llm.clone();
+                    let notif_embed = state.cx.embed.clone();
+                    let notif_hnsw = state.cx.hnsw.clone();
+                    let notif_config = state.cx.config.clone();
                     let notif_shutdown = state.cx.shutdown_rx();
                     tokio::spawn(async move {
                         crate::notification_delivery::run(
                             notif_db,
                             notif_pipeline,
                             notif_llm,
+                            notif_embed,
+                            notif_hnsw,
+                            notif_config,
                             notif_shutdown,
                             10, // check every 10 seconds
                         )
