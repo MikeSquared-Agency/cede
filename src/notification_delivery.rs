@@ -7,23 +7,33 @@
 //! user's channel — so the user doesn't have to send another message to
 //! see the results.
 //!
+//! The delivery LLM receives the same full briefing (identity, knowledge,
+//! recent conversation) as the main agent — no opinionated rules. It reads
+//! the context, sees the completed task result, and decides naturally
+//! whether and how to tell the user.
+//!
 //! # Flow
 //!
 //! ```text
 //!   tick (every N seconds)
 //!     → query sessions with pending notifications
 //!     → for each: resolve outbound routing (channel + external_id)
-//!     → brief LLM call to formulate a natural update message
+//!     → build full briefing (same as main agent)
+//!     → LLM call to formulate a natural follow-up message
 //!     → Pipeline::send_outbound() to push it to the user
 //!     → touch_nodes() to mark notifications as delivered
 //! ```
 
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::channels::Pipeline;
 use crate::channels::types::*;
+use crate::config::Config;
 use crate::db::Db;
 use crate::db::queries;
+use crate::embed::EmbedHandle;
+use crate::hnsw::VectorIndex;
 use crate::identity;
 use crate::llm::LlmClient;
 use crate::memory;
@@ -32,12 +42,16 @@ use crate::types::*;
 /// Run the notification delivery loop until shutdown is signalled.
 ///
 /// Checks for pending notification nodes every `interval_secs` seconds.
-/// When found, resolves outbound routing, runs a brief LLM call to
-/// produce a natural message, and sends it via the pipeline.
+/// When found, resolves outbound routing, builds a full briefing (same as
+/// the main agent), runs an LLM call to produce a natural message, and
+/// sends it via the pipeline.
 pub async fn run(
     db: Db,
     pipeline: Arc<Pipeline>,
     llm: Arc<dyn LlmClient>,
+    embed: EmbedHandle,
+    hnsw: Arc<RwLock<VectorIndex>>,
+    config: Config,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     interval_secs: u64,
 ) {
@@ -50,7 +64,7 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if let Err(e) = deliver_pending(&db, &pipeline, &llm).await {
+                if let Err(e) = deliver_pending(&db, &pipeline, &llm, &embed, &hnsw, &config).await {
                     tracing::warn!(error = %e, "notification delivery tick failed");
                 }
             }
@@ -67,6 +81,9 @@ async fn deliver_pending(
     db: &Db,
     pipeline: &Arc<Pipeline>,
     llm: &Arc<dyn LlmClient>,
+    embed: &EmbedHandle,
+    hnsw: &Arc<RwLock<VectorIndex>>,
+    config: &Config,
 ) -> crate::error::Result<()> {
     // Query all sessions that have undelivered notification nodes.
     let sessions_with_notifs = db
@@ -79,7 +96,7 @@ async fn deliver_pending(
 
     for (user_id, channel, session_id, notifications) in sessions_with_notifs {
         if let Err(e) = deliver_for_session(
-            db, pipeline, llm,
+            db, pipeline, llm, embed, hnsw, config,
             &user_id, &channel, &session_id, &notifications,
         ).await {
             tracing::warn!(
@@ -100,6 +117,9 @@ async fn deliver_for_session(
     db: &Db,
     pipeline: &Arc<Pipeline>,
     llm: &Arc<dyn LlmClient>,
+    embed: &EmbedHandle,
+    hnsw: &Arc<RwLock<VectorIndex>>,
+    config: &Config,
     user_id: &str,
     channel: &str,
     session_id: &str,
@@ -135,28 +155,59 @@ async fn deliver_for_session(
         callback_url: None,
     };
 
-    // 2. Build a brief prompt with the notification summaries + persona
-    //    Pull Soul + Belief nodes so the LLM reply stays in character.
-    let persona = db
-        .call(|conn| {
-            let mut parts = Vec::new();
-            let souls = queries::get_nodes_by_kind(conn, NodeKind::Soul)?;
-            for n in &souls {
-                if let Some(ref b) = n.body {
-                    parts.push(b.clone());
-                }
-            }
-            let beliefs = queries::get_nodes_by_kind(conn, NodeKind::Belief)?;
-            for n in &beliefs {
-                if let Some(ref b) = n.body {
-                    parts.push(format!("Belief: {}", b));
-                }
-            }
-            Ok(parts.join("\n"))
-        })
+    // 2. Build a full briefing — same as the main agent gets.
+    //    Use the first notification body as the semantic query so recall
+    //    surfaces the most relevant identity/knowledge nodes.
+    let semantic_query = notifications
+        .first()
+        .and_then(|n| n.body.as_deref())
+        .unwrap_or(&notifications[0].title);
+
+    let brief = memory::briefing_with_kinds(
+        db, embed, hnsw, config,
+        semantic_query,
+        &[
+            NodeKind::Soul,
+            NodeKind::Belief,
+            NodeKind::Goal,
+            NodeKind::Fact,
+            NodeKind::Decision,
+            NodeKind::Pattern,
+            NodeKind::Capability,
+            NodeKind::Limitation,
+        ],
+        config.default_recall_top_k,
+    )
+    .await?;
+
+    let mut context_doc = brief.context_doc;
+
+    // 3. Append recent session nodes (recency window) — mirrors orchestrator
+    let sid = session_id.to_string();
+    let recency_window = config.session_recency_window;
+    let recent_nodes = db
+        .call(move |conn| queries::get_recent_session_nodes(conn, &sid, recency_window))
         .await
         .unwrap_or_default();
 
+    if !recent_nodes.is_empty() {
+        let mut recency_section = String::new();
+        for node in recent_nodes.iter().rev() {
+            let body = node.body.as_deref().unwrap_or(&node.title);
+            let label = match node.kind {
+                NodeKind::UserInput => "User",
+                _ => "Assistant",
+            };
+            let ts = memory::format_timestamp(node.created_at);
+            let rel = memory::relative_time(node.created_at);
+            recency_section.push_str(&format!("- [{ts}] ({rel}) {label}: {body}\n"));
+        }
+        context_doc.push_str("## Session context (recent)\n");
+        context_doc.push_str(&recency_section);
+        context_doc.push('\n');
+    }
+
+    // 4. Append notification / background task results
     let mut notification_block = String::new();
     let mut delivered_ids: Vec<String> = Vec::new();
     for node in notifications {
@@ -166,12 +217,6 @@ async fn deliver_for_session(
         delivered_ids.push(node.id.clone());
     }
 
-    let persona_section = if persona.is_empty() {
-        String::new()
-    } else {
-        format!("## Your identity\n{}\n\n", persona)
-    };
-
     // Pull the full body of linked BackgroundTask nodes for richer context.
     let bg_bodies = fetch_background_task_bodies(db, notifications).await;
     let bg_context = if bg_bodies.is_empty() {
@@ -180,69 +225,44 @@ async fn deliver_for_session(
         format!("\n## Full background task results\n{}\n", bg_bodies.join("\n---\n"))
     };
 
-    // Pull recent conversation so the notification LLM knows what was
-    // already said and can skip redundant updates or blend naturally.
-    let sid = session_id.to_string();
-    let recent_nodes = db
-        .call(move |conn| queries::get_recent_session_nodes(conn, &sid, 10))
-        .await
-        .unwrap_or_default();
+    context_doc.push_str(&format!(
+        "## Completed background tasks\n\
+         The following tasks have finished:\n\n{notification_block}\n\
+         {bg_context}\n"
+    ));
 
-    let mut conversation_block = String::new();
-    if !recent_nodes.is_empty() {
-        conversation_block.push_str("## Recent conversation (what was already said)\n");
-        for node in recent_nodes.iter().rev() {
-            let label = match node.kind {
-                NodeKind::UserInput => "User",
-                NodeKind::ToolCall => "Tool",
-                NodeKind::BackgroundTask => "Background",
-                _ => "Assistant",
-            };
-            let body = node.body.as_deref().unwrap_or(&node.title);
-            let rel = memory::relative_time(node.created_at);
-            conversation_block.push_str(&format!("- ({rel}) {label}: {body}\n"));
-        }
-        conversation_block.push('\n');
-    }
-
-    let system_prompt = format!(
-        "{persona_section}\
-         {conversation_block}\
-         You are following up on background work you kicked off earlier. \
-         The following tasks have completed:\n\n{notification_block}\n\
-         {bg_context}\n\
-         Write a brief, natural message to let the user know what happened. \
-         Be conversational and concise — this is a proactive update, not a \
-         formal report. If something failed, mention it clearly but calmly. \
+    // 5. Simple, non-opinionated instruction — let the briefing do the work
+    context_doc.push_str(
+        "## Your task\n\
+         You have background work that just completed. You are following up \
+         proactively — the user has not sent a new message.\n\n\
+         Read everything above: your identity, what you know, the recent \
+         conversation, and the completed task results. Then decide:\n\n\
+         - If the results contain information the user should hear, write a \
+           brief, natural follow-up message. Be conversational — this is a \
+           proactive update, not a formal report.\n\
+         - If there is genuinely nothing worth sending (e.g. the result is \
+           empty, meaningless, or the user truly already has this exact \
+           information), respond with [SKIP].\n\n\
          Do NOT say \"notification\" or refer to yourself as a system. \
-         Stay in character.\n\n\
-         CRITICAL RULES:\n\
-         1. Read the recent conversation above carefully. If the user ALREADY \
-            knows about this result (because you discussed it, acknowledged it, \
-            or the topic was covered), respond with exactly [SKIP].\n\
-         2. Do NOT repeat, paraphrase, or re-announce anything already said.\n\
-         3. If sending a message, it must contain NEW information the user \
-            hasn't seen yet. Blend naturally into the ongoing conversation.\n\
-         4. If the task results are vague, empty, or contain no concrete \
-            information worth sharing, respond with exactly [SKIP].\n\
-         5. Match the tone and energy of the recent conversation.",
+         Stay in character.\n"
     );
 
     let messages = vec![
-        Message::system(system_prompt),
+        Message::system(context_doc),
         Message::user("What's the update?"),
     ];
 
-    // 3. Brief LLM call to formulate the message
+    // 6. LLM call to formulate the message
     let response = llm.complete(&messages).await?;
     let reply_text = response.text.trim().to_string();
 
-    // Strip [SKIP] anywhere in the response — exact match, starts-with, or contains
+    // Guard: [SKIP] anywhere in the response means don't send
     if reply_text.is_empty() || reply_text.contains("[SKIP]") {
         tracing::info!(
             session_id = %session_id,
             count = notifications.len(),
-            "notification delivery skipped (no substantive content)"
+            "notification delivery skipped (LLM decided nothing to send)"
         );
         // Still mark as delivered so we don't keep retrying
         db.call(move |conn| queries::touch_nodes(conn, &delivered_ids))
@@ -250,7 +270,7 @@ async fn deliver_for_session(
         return Ok(());
     }
 
-    // 4. Send via the pipeline's outbound path
+    // 7. Send via the pipeline's outbound path
     let message = OutboundMessage::text(&reply_text);
     if let Err(e) = pipeline.send_outbound(&target, message).await {
         tracing::error!(
@@ -269,7 +289,7 @@ async fn deliver_for_session(
         "proactive notifications delivered"
     );
 
-    // 5. Mark notifications as delivered (bump access_count from 0)
+    // 8. Mark notifications as delivered (bump access_count from 0)
     db.call(move |conn| queries::touch_nodes(conn, &delivered_ids))
         .await?;
 
