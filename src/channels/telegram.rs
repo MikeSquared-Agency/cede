@@ -89,7 +89,30 @@ struct TgMessage {
     from: Option<TgUser>,
     chat: TgChat,
     text: Option<String>,
-    // TODO: photo, document, voice, etc.
+    /// Caption for media messages (photo, document, etc.).
+    caption: Option<String>,
+    /// Photo sizes — Telegram sends multiple resolutions; we pick the largest.
+    photo: Option<Vec<TgPhotoSize>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgPhotoSize {
+    file_id: String,
+    #[allow(dead_code)]
+    file_unique_id: String,
+    #[allow(dead_code)]
+    width: i64,
+    #[allow(dead_code)]
+    height: i64,
+    #[serde(default)]
+    file_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct TgFile {
+    file_id: String,
+    file_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,56 +211,77 @@ impl Channel for TelegramChannel {
                                             for update in updates {
                                                 offset = update.update_id + 1;
                                                 if let Some(msg) = update.message {
-                                                    if let Some(text) = msg.text {
-                                                        let sender_id = msg
-                                                            .from
-                                                            .as_ref()
-                                                            .map(|u| u.id.to_string())
-                                                            .unwrap_or_else(|| {
-                                                                msg.chat.id.to_string()
-                                                            });
-                                                        let sender_name = msg.from.as_ref().map(
-                                                            |u| {
-                                                                let mut name = u.first_name.clone();
-                                                                if let Some(ref last) = u.last_name
-                                                                {
-                                                                    name.push(' ');
-                                                                    name.push_str(last);
-                                                                }
-                                                                name
-                                                            },
-                                                        );
+                                                    // Extract text: prefer `text`, fall back to `caption` for media messages
+                                                    let text = msg.text.clone()
+                                                        .or_else(|| msg.caption.clone());
 
-                                                        let group_id =
-                                                            if msg.chat.chat_type != "private" {
-                                                                Some(msg.chat.id.to_string())
-                                                            } else {
-                                                                None
-                                                            };
+                                                    // Download photo if present
+                                                    let media = if let Some(ref photos) = msg.photo {
+                                                        // Pick the largest photo (last in the array)
+                                                        if let Some(photo) = photos.last() {
+                                                            download_telegram_photo(
+                                                                &client, &token, &photo.file_id,
+                                                            ).await
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else {
+                                                        None
+                                                    };
 
-                                                        let envelope = InboundEnvelope {
-                                                            channel: "telegram".into(),
-                                                            external_id: sender_id,
-                                                            sender_name,
-                                                            text,
-                                                            media: None,
-                                                            reply_to: None,
-                                                            group_id,
-                                                            callback_url: None,
-                                                            raw: serde_json::json!({
-                                                                "chat_id": msg.chat.id,
-                                                                "message_id": msg.message_id,
-                                                            }),
-                                                            timestamp: now_unix(),
+                                                    // Skip if there's neither text nor media
+                                                    if text.is_none() && media.is_none() {
+                                                        continue;
+                                                    }
+
+                                                    let sender_id = msg
+                                                        .from
+                                                        .as_ref()
+                                                        .map(|u| u.id.to_string())
+                                                        .unwrap_or_else(|| {
+                                                            msg.chat.id.to_string()
+                                                        });
+                                                    let sender_name = msg.from.as_ref().map(
+                                                        |u| {
+                                                            let mut name = u.first_name.clone();
+                                                            if let Some(ref last) = u.last_name
+                                                            {
+                                                                name.push(' ');
+                                                                name.push_str(last);
+                                                            }
+                                                            name
+                                                        },
+                                                    );
+
+                                                    let group_id =
+                                                        if msg.chat.chat_type != "private" {
+                                                            Some(msg.chat.id.to_string())
+                                                        } else {
+                                                            None
                                                         };
 
-                                                        if inbound_tx.send(envelope).await.is_err()
-                                                        {
-                                                            tracing::error!(
-                                                                "telegram: inbound channel closed"
-                                                            );
-                                                            return;
-                                                        }
+                                                    let envelope = InboundEnvelope {
+                                                        channel: "telegram".into(),
+                                                        external_id: sender_id,
+                                                        sender_name,
+                                                        text: text.unwrap_or_default(),
+                                                        media,
+                                                        reply_to: None,
+                                                        group_id,
+                                                        callback_url: None,
+                                                        raw: serde_json::json!({
+                                                            "chat_id": msg.chat.id,
+                                                            "message_id": msg.message_id,
+                                                        }),
+                                                        timestamp: now_unix(),
+                                                    };
+
+                                                    if inbound_tx.send(envelope).await.is_err()
+                                                    {
+                                                        tracing::error!(
+                                                            "telegram: inbound channel closed"
+                                                        );
+                                                        return;
                                                     }
                                                 }
                                             }
@@ -464,4 +508,62 @@ fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+/// Download a Telegram photo by its `file_id`.
+///
+/// 1. `getFile` → obtain `file_path`
+/// 2. Download raw bytes from `https://api.telegram.org/file/bot<token>/<file_path>`
+/// 3. Return as `MediaPayload { kind: Image, data, mime_type: "image/jpeg" }`
+async fn download_telegram_photo(
+    client: &reqwest::Client,
+    token: &str,
+    file_id: &str,
+) -> Option<MediaPayload> {
+    // Step 1: getFile
+    let url = format!("{}{}/getFile?file_id={}", BASE_URL, token, file_id);
+    let resp = client.get(&url).send().await.ok()?;
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let file_path = body
+        .get("result")
+        .and_then(|r| r.get("file_path"))
+        .and_then(|p| p.as_str())?;
+
+    // Step 2: download bytes
+    let download_url = format!(
+        "https://api.telegram.org/file/bot{}/{}",
+        token, file_path
+    );
+    let data = client
+        .get(&download_url)
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()?
+        .to_vec();
+
+    if data.is_empty() {
+        return None;
+    }
+
+    // Infer MIME from file extension, default to image/jpeg
+    let mime = if file_path.ends_with(".png") {
+        "image/png"
+    } else if file_path.ends_with(".gif") {
+        "image/gif"
+    } else if file_path.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+
+    Some(MediaPayload {
+        kind: MediaKind::Image,
+        data,
+        mime_type: mime.to_string(),
+        filename: Some(file_path.to_string()),
+        url: Some(download_url),
+    })
 }

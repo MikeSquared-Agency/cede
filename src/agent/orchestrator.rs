@@ -3,6 +3,8 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
+use base64::Engine as _;
+
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::queries;
@@ -14,6 +16,11 @@ use crate::memory;
 use crate::memory::format_timestamp;
 use crate::tools::ToolRegistry;
 use crate::types::*;
+
+/// Base64-encode raw bytes for Anthropic's image block format.
+fn base64_encode(data: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
 
 /// The agent. Owns the LLM client, tool registry, and a handle to the shared
 /// `CortexEmbedded` infrastructure (db, embed, hnsw).
@@ -305,6 +312,7 @@ impl Agent {
         session_id: &NodeId,
         input: &str,
         ctx: &TurnContext,
+        media: Option<&crate::channels::types::MediaPayload>,
     ) -> Result<String> {
         // 1. Store the user's input as a UserInput node in the graph
         let now_ts = format_timestamp(crate::types::now_unix());
@@ -441,10 +449,26 @@ impl Agent {
             }
         }
 
-        // 4. Build messages — just system + user, no history
+        // 4. Build messages — just system + user (+ optional image), no history
+        let user_msg = if let Some(media) = media {
+            if media.kind == crate::channels::types::MediaKind::Image {
+                let b64 = base64_encode(&media.data);
+                Message::user_with_image(input, &b64, &media.mime_type)
+            } else {
+                // Non-image media: mention it in text
+                let label = format!("{} [attached {} file: {}]",
+                    input,
+                    format!("{:?}", media.kind).to_lowercase(),
+                    media.filename.as_deref().unwrap_or("file"),
+                );
+                Message::user(&label)
+            }
+        } else {
+            Message::user(input)
+        };
         let messages = vec![
             Message::system(context_doc),
-            Message::user(input),
+            user_msg,
         ];
 
         // 5. First LLM call (synchronous — the user waits for this one)
