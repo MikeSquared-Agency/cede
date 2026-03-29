@@ -33,6 +33,7 @@ fn kind_color(kind: NodeKind) -> Color {
         | NodeKind::ToolCall | NodeKind::LoopIteration => Color::Yellow,
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => Color::Green,
         NodeKind::BackgroundTask => Color::Blue,
+        NodeKind::DictationTurn | NodeKind::VocabEntry | NodeKind::AppContext => Color::LightYellow,
     }
 }
 
@@ -75,6 +76,7 @@ fn node_category(kind: NodeKind) -> &'static str {
         | NodeKind::ToolCall | NodeKind::LoopIteration => "Operational",
         NodeKind::Pattern | NodeKind::Limitation | NodeKind::Capability => "Self-Model",
         NodeKind::BackgroundTask => "Tasks",
+        NodeKind::DictationTurn | NodeKind::VocabEntry | NodeKind::AppContext => "Dictation",
     }
 }
 

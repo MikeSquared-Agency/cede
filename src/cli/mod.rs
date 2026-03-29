@@ -6,13 +6,13 @@ mod graph_viz;
 mod graph_tui;
 
 #[derive(Parser)]
-#[command(name = "cede", about = "A forkable self-aware agent with graph memory")]
+#[command(name = "theword", about = "Local privacy-first dictation with persistent graph memory")]
 pub struct Cli {
     /// Path to the SQLite database file.
-    #[arg(long, default_value = "cede.db")]
+    #[arg(long, default_value = "theword.db")]
     pub db: String,
 
-    /// Use Ollama as the LLM backend (format: model@url, e.g. llama3@http://localhost:11434)
+    /// Use Ollama as the LLM backend (format: model@url, e.g. qwen2.5:1.5b@http://localhost:11434)
     #[arg(long)]
     pub ollama: Option<String>,
 
@@ -60,8 +60,30 @@ pub enum Commands {
     /// Check graph health
     Doctor,
 
-    /// Pre-download the embedding model and initialize DB
+    /// Initialize DB, download Whisper model, seed soul nodes
     Init,
+
+    /// Start the hotkey dictation listener (main mode)
+    Listen,
+
+    /// Record one utterance manually and output the result (no hotkey needed)
+    Dictate,
+
+    /// Manage learned vocabulary corrections
+    Vocab {
+        #[command(subcommand)]
+        action: VocabAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum VocabAction {
+    /// List all learned vocabulary corrections
+    List,
+    /// Add a manual correction: theword vocab add "wrong" "right"
+    Add { wrong: String, right: String },
+    /// Remove a correction by the 'wrong' word/phrase
+    Remove { wrong: String },
 }
 
 #[derive(Subcommand)]
@@ -113,6 +135,24 @@ pub async fn run() -> crate::error::Result<()> {
             println!("Database initialized at: {}", cli.db);
             println!("Embedding model ready.");
             println!("Soul seeded.");
+
+            // Download Whisper model
+            let dict_config = crate::config::DictationConfig::default();
+            println!(
+                "\nDownloading Whisper model ({})...",
+                dict_config.whisper_model.filename()
+            );
+            match tokio::task::spawn_blocking(move || {
+                crate::stt::download_model(&dict_config.whisper_model)
+            })
+            .await
+            {
+                Ok(Ok(path)) => println!("Whisper model ready at: {}", path.display()),
+                Ok(Err(e))  => eprintln!("Warning: could not download model: {e}"),
+                Err(e)      => eprintln!("Warning: spawn_blocking error: {e}"),
+            }
+
+            println!("\ntheword ready. Run `theword listen` to start dictating.");
             Ok(())
         }
 
@@ -472,7 +512,7 @@ pub async fn run() -> crate::error::Result<()> {
                 })
                 .await?;
 
-            println!("cede chat — type 'exit' or Ctrl+C to quit\n");
+            println!("theword chat — type 'exit' or Ctrl+C to quit\n");
             let stdin = io::stdin();
             loop {
                 print!("> ");
@@ -492,6 +532,143 @@ pub async fn run() -> crate::error::Result<()> {
             }
             Ok(())
         }
+
+        Commands::Listen => {
+            let dict_config = crate::config::DictationConfig::default();
+            let llm = build_llm_client(&ollama_spec).ok().map(|c| c as Arc<dyn crate::llm::LlmClient>);
+
+            if llm.is_none() {
+                eprintln!("Note: no LLM configured — transcription will be used as-is (no rewrite pass).");
+                eprintln!("Use --ollama qwen2.5:1.5b or set ANTHROPIC_API_KEY to enable rewriting.\n");
+            }
+
+            let model_path = crate::stt::resolve_model_path(
+                &dict_config.whisper_model,
+                dict_config.whisper_model_path.as_deref(),
+            )?;
+            let language = dict_config.language.clone();
+            let whisper = tokio::task::spawn_blocking(move || {
+                crate::stt::WhisperHandle::load(&model_path, language)
+            })
+            .await
+            .map_err(|e| crate::error::CortexError::Stt(format!("spawn_blocking: {e}")))??;
+
+            let engine = Arc::new(crate::dictation::DictationEngine::new(
+                Arc::new(cx),
+                Arc::new(whisper),
+                llm,
+                dict_config,
+            ));
+
+            engine.run_listen_loop().await
+        }
+
+        Commands::Dictate => {
+            let dict_config = crate::config::DictationConfig::default();
+            let llm = build_llm_client(&ollama_spec).ok().map(|c| c as Arc<dyn crate::llm::LlmClient>);
+
+            let model_path = crate::stt::resolve_model_path(
+                &dict_config.whisper_model,
+                dict_config.whisper_model_path.as_deref(),
+            )?;
+            let language = dict_config.language.clone();
+            let whisper = tokio::task::spawn_blocking(move || {
+                crate::stt::WhisperHandle::load(&model_path, language)
+            })
+            .await
+            .map_err(|e| crate::error::CortexError::Stt(format!("spawn_blocking: {e}")))??;
+
+            let engine = crate::dictation::DictationEngine::new(
+                Arc::new(cx),
+                Arc::new(whisper),
+                llm,
+                dict_config,
+            );
+
+            println!("Recording... speak now. (silence ends recording)");
+            match engine.dictate_once(std::time::Duration::from_secs(30)).await? {
+                crate::dictation::DictationResult::Text(t)           => println!("Output: {t}"),
+                crate::dictation::DictationResult::Command { intent, original } =>
+                    println!("Command detected — intent: {intent}\n  original: {original}"),
+                crate::dictation::DictationResult::Silent            => println!("(no speech detected)"),
+            }
+            Ok(())
+        }
+
+        Commands::Vocab { action } => match action {
+            VocabAction::List => {
+                let nodes = cx
+                    .db
+                    .call(|conn| {
+                        crate::db::queries::get_nodes_by_kind(
+                            conn,
+                            crate::types::NodeKind::VocabEntry,
+                        )
+                    })
+                    .await?;
+                if nodes.is_empty() {
+                    println!("No vocab corrections learned yet.");
+                } else {
+                    for n in &nodes {
+                        println!("  {}", n.title);
+                        if let Some(ref body) = n.body {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+                                println!(
+                                    "    {} → {}",
+                                    v["from"].as_str().unwrap_or(""),
+                                    v["to"].as_str().unwrap_or("")
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+            VocabAction::Add { wrong, right } => {
+                let node = crate::types::Node::new(
+                    crate::types::NodeKind::VocabEntry,
+                    format!("Correction: {wrong} → {right}"),
+                )
+                .with_body(
+                    serde_json::json!({"from": wrong, "to": right}).to_string(),
+                );
+                cx.remember(node).await?;
+                println!("Vocab correction added: {wrong} → {right}");
+                Ok(())
+            }
+            VocabAction::Remove { wrong } => {
+                let nodes = cx
+                    .db
+                    .call(|conn| {
+                        crate::db::queries::get_nodes_by_kind(
+                            conn,
+                            crate::types::NodeKind::VocabEntry,
+                        )
+                    })
+                    .await?;
+                let target = nodes.into_iter().find(|n| {
+                    n.body
+                        .as_deref()
+                        .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                        .and_then(|v| v["from"].as_str().map(|s| s == wrong))
+                        .unwrap_or(false)
+                });
+                match target {
+                    Some(n) => {
+                        let id = n.id.clone();
+                        cx.db
+                            .call(move |conn| {
+                                conn.execute("DELETE FROM nodes WHERE id = ?1", [&id])?;
+                                Ok(())
+                            })
+                            .await?;
+                        println!("Removed vocab correction for: {wrong}");
+                    }
+                    None => println!("No correction found for: {wrong}"),
+                }
+                Ok(())
+            }
+        },
 
         Commands::Ask { query } => {
             let llm = build_llm_client(&ollama_spec)?;

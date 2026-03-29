@@ -37,6 +37,12 @@ pub enum CortexError {
 
     #[error("Unsupported: {0}")]
     Unsupported(String),
+
+    #[error("Audio error: {0}")]
+    Audio(String),
+
+    #[error("STT error: {0}")]
+    Stt(String),
 }
 
 pub type Result<T> = std::result::Result<T, CortexError>;

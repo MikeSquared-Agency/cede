@@ -10,6 +10,10 @@ pub mod tools;
 pub mod llm;
 pub mod agent;
 pub mod cli;
+// ── theword additions ──────────────────────────────────────
+pub mod audio;
+pub mod stt;
+pub mod dictation;
 
 use std::collections::HashMap;
 use std::sync::Arc;

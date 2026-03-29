@@ -1,21 +1,22 @@
 [package]
-name    = "cede"
+name    = "theword"
 version = "0.1.0"
 edition = "2021"
-description = "A forkable self-aware agent with graph memory"
+description = "Local privacy-first dictation agent with persistent graph memory"
 
 [lib]
-name = "cede"
+name = "theword"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cede"
-path = "src/bin/cede.rs"
+name = "theword"
+path = "src/bin/theword.rs"
 
 [dependencies]
+# ── inherited from cede ──────────────────────────────────────────────────────
 rusqlite         = { version = "0.31", features = ["bundled"] }
 instant-distance = "0.6"
-fastembed        = "4"
+fastembed        = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
 tokio            = { version = "1", features = ["full"] }
 serde            = { version = "1", features = ["derive"] }
 serde_json       = "1"
@@ -32,3 +33,29 @@ chrono           = "0.4"
 ratatui          = "0.29"
 crossterm        = { version = "0.28", features = ["event-stream"] }
 jsonschema       = "0.28"
+
+# ── audio capture ────────────────────────────────────────────────────────────
+cpal             = "0.15"
+ringbuf          = "0.4"
+
+# ── voice activity detection ─────────────────────────────────────────────────
+webrtc-vad       = "0.4"
+
+# ── speech-to-text (whisper.cpp via FFI) ─────────────────────────────────────
+# Requires C++ toolchain at build time; GPU optional (feature = "cuda" or "metal")
+whisper-rs       = "0.13"
+
+# ── keyboard simulation ──────────────────────────────────────────────────────
+enigo            = "0.2"
+
+# ── global hotkey listener ───────────────────────────────────────────────────
+rdev             = "0.5"
+
+# ── clipboard ────────────────────────────────────────────────────────────────
+arboard          = "3"
+
+# ── utilities ────────────────────────────────────────────────────────────────
+# Blocking HTTP for model download (init only, not hot path)
+ureq             = "2"
+# Cross-platform home directory resolution
+dirs-next        = "2"

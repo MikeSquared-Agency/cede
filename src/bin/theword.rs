@@ -1,6 +1,6 @@
 #[tokio::main]
 async fn main() {
-    if let Err(e) = cede::cli::run().await {
+    if let Err(e) = theword::cli::run().await {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }

@@ -34,6 +34,13 @@ pub enum NodeKind {
     Pattern,
     Limitation,
     Capability,
+    // Dictation — theword additions
+    /// One spoken utterance: raw transcript + LLM-cleaned version + correction diff.
+    DictationTurn,
+    /// A learned vocabulary correction, e.g. "sea dee" → "cede". Zero decay.
+    VocabEntry,
+    /// The focused application context when a dictation turn was captured.
+    AppContext,
 }
 
 impl NodeKind {
@@ -56,6 +63,9 @@ impl NodeKind {
             Self::Pattern => "pattern",
             Self::Limitation => "limitation",
             Self::Capability => "capability",
+            Self::DictationTurn => "dictation_turn",
+            Self::VocabEntry => "vocab_entry",
+            Self::AppContext => "app_context",
         }
     }
 
@@ -78,6 +88,9 @@ impl NodeKind {
             "pattern" => Some(Self::Pattern),
             "limitation" => Some(Self::Limitation),
             "capability" => Some(Self::Capability),
+            "dictation_turn" => Some(Self::DictationTurn),
+            "vocab_entry" => Some(Self::VocabEntry),
+            "app_context" => Some(Self::AppContext),
             _ => None,
         }
     }
@@ -94,6 +107,11 @@ impl NodeKind {
             | Self::ToolCall | Self::LoopIteration => 0.05,
             // Self-model nodes decay slowly
             Self::Pattern | Self::Limitation | Self::Capability => 0.005,
+            // Vocab corrections never decay (learned corrections are permanent)
+            Self::VocabEntry => 0.0,
+            // Dictation turns decay moderately; app context decays quickly
+            Self::DictationTurn => 0.02,
+            Self::AppContext => 0.05,
             // Everything else: moderate decay
             _ => 0.01,
         }
@@ -106,6 +124,9 @@ impl NodeKind {
             Self::UserInput => 0.4,
             Self::Session | Self::Turn | Self::LlmCall
             | Self::ToolCall | Self::LoopIteration => 0.2,
+            Self::VocabEntry => 1.0,
+            Self::DictationTurn => 0.3,
+            Self::AppContext => 0.2,
             _ => 0.5,
         }
     }
